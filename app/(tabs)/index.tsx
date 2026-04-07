@@ -21,7 +21,7 @@ import Animated, {
 import { Colors, Spacing, FontSize, BorderRadius, Shadows } from '@/constants/theme';
 import { useAuth } from '@/contexts/AuthContext';
 import { useCart } from '@/contexts/CartContext';
-import { supabase } from '@/lib/supabase';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Product, Category } from '@/types/database';
 
 export default function CashierScreen() {
@@ -51,13 +51,13 @@ export default function CashierScreen() {
   const loadCategories = async () => {
     if (!store) return;
 
-    const { data, error } = await supabase
-      .from('categories')
-      .select('*')
-      .eq('store_id', store.id);
-
-    if (data) {
-      setCategories(data);
+    try {
+      const data = await AsyncStorage.getItem(`categories_${store.id}`);
+      if (data) {
+        setCategories(JSON.parse(data));
+      }
+    } catch (error) {
+      console.error('Error loading categories:', error);
     }
   };
 
@@ -65,14 +65,17 @@ export default function CashierScreen() {
     if (!store) return;
 
     setLoading(true);
-    const { data, error } = await supabase
-      .from('products')
-      .select('*')
-      .eq('store_id', store.id)
-      .order('created_at', { ascending: false });
-
-    if (data) {
-      setProducts(data);
+    try {
+      const data = await AsyncStorage.getItem(`products_${store.id}`);
+      if (data) {
+        const productsArray = JSON.parse(data);
+        productsArray.sort((a: Product, b: Product) =>
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        );
+        setProducts(productsArray);
+      }
+    } catch (error) {
+      console.error('Error loading products:', error);
     }
     setLoading(false);
   };
@@ -110,24 +113,23 @@ export default function CashierScreen() {
     const orderNumber = `ORD-${Date.now()}`;
 
     try {
-      const { data: transaction, error: transactionError } = await supabase
-        .from('transactions')
-        .insert({
-          order_id: orderNumber,
-          subtotal,
-          tax,
-          total,
-          payment_method: selectedPaymentMethod,
-          status: 'Completed',
-          store_id: store.id,
-        })
-        .select()
-        .single();
+      const transactionId = `trans_${Date.now()}`;
+      const transaction = {
+        id: transactionId,
+        order_id: orderNumber,
+        subtotal,
+        tax,
+        total,
+        payment_method: selectedPaymentMethod,
+        status: 'Completed',
+        store_id: store.id,
+        user_id: null,
+        created_at: new Date().toISOString(),
+      };
 
-      if (transactionError) throw transactionError;
-
-      const transactionItems = cart.map((item) => ({
-        transaction_id: transaction.id,
+      const transactionItems = cart.map((item, index) => ({
+        id: `item_${Date.now()}_${index}`,
+        transaction_id: transactionId,
         product_id: item.product.id,
         product_name: item.product.name,
         quantity: item.quantity,
@@ -135,19 +137,23 @@ export default function CashierScreen() {
         subtotal: item.product.price * item.quantity,
       }));
 
-      const { error: itemsError } = await supabase
-        .from('transaction_items')
-        .insert(transactionItems);
+      const transactionsData = await AsyncStorage.getItem(`transactions_${store.id}`);
+      const transactions = transactionsData ? JSON.parse(transactionsData) : [];
+      transactions.push({ ...transaction, transaction_items: transactionItems });
+      await AsyncStorage.setItem(`transactions_${store.id}`, JSON.stringify(transactions));
 
-      if (itemsError) throw itemsError;
+      const productsData = await AsyncStorage.getItem(`products_${store.id}`);
+      const products = productsData ? JSON.parse(productsData) : [];
 
       for (const item of cart) {
-        const newStock = item.product.stock - item.quantity;
-        await supabase
-          .from('products')
-          .update({ stock: newStock })
-          .eq('id', item.product.id);
+        const productIndex = products.findIndex((p: Product) => p.id === item.product.id);
+        if (productIndex !== -1) {
+          products[productIndex].stock -= item.quantity;
+          products[productIndex].updated_at = new Date().toISOString();
+        }
       }
+
+      await AsyncStorage.setItem(`products_${store.id}`, JSON.stringify(products));
 
       setShowCheckout(false);
       setCashReceived('');

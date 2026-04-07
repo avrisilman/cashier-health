@@ -15,7 +15,7 @@ import {
 } from 'lucide-react-native';
 import { Colors, Spacing, FontSize, BorderRadius, Shadows } from '@/constants/theme';
 import { useAuth } from '@/contexts/AuthContext';
-import { supabase } from '@/lib/supabase';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Transaction, TransactionItem, Product } from '@/types/database';
 
 interface SalesData {
@@ -49,75 +49,70 @@ export default function ReportsScreen() {
 
     setLoading(true);
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const todayString = today.toISOString();
+    try {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const todayString = today.toISOString();
 
-    const { data: transactions, error: transError } = await supabase
-      .from('transactions')
-      .select('*, transaction_items(*)')
-      .eq('store_id', store.id)
-      .eq('status', 'Completed')
-      .gte('created_at', todayString);
+      const transactionsData = await AsyncStorage.getItem(`transactions_${store.id}`);
+      const allTransactions = transactionsData ? JSON.parse(transactionsData) : [];
 
-    if (transError) {
-      console.error('Error loading transactions:', transError);
-      setLoading(false);
-      setRefreshing(false);
-      return;
-    }
+      const transactions = allTransactions.filter(
+        (t: any) => t.status === 'Completed' && new Date(t.created_at) >= today
+      );
 
-    const totalSales = transactions?.reduce((sum, t) => sum + t.total, 0) || 0;
-    const totalOrders = transactions?.length || 0;
+      const totalSales = transactions?.reduce((sum: number, t: any) => sum + t.total, 0) || 0;
+      const totalOrders = transactions?.length || 0;
 
-    const itemMap = new Map<string, { quantity: number; revenue: number }>();
+      const itemMap = new Map<string, { quantity: number; revenue: number }>();
 
-    transactions?.forEach((trans: any) => {
-      trans.transaction_items?.forEach((item: TransactionItem) => {
-        const existing = itemMap.get(item.product_id || item.product_name) || {
-          quantity: 0,
-          revenue: 0,
-        };
-        itemMap.set(item.product_id || item.product_name, {
-          quantity: existing.quantity + item.quantity,
-          revenue: existing.revenue + item.subtotal,
+      transactions?.forEach((trans: any) => {
+        trans.transaction_items?.forEach((item: TransactionItem) => {
+          const existing = itemMap.get(item.product_id || item.product_name) || {
+            quantity: 0,
+            revenue: 0,
+          };
+          itemMap.set(item.product_id || item.product_name, {
+            quantity: existing.quantity + item.quantity,
+            revenue: existing.revenue + item.subtotal,
+          });
         });
       });
-    });
 
-    const { data: products } = await supabase
-      .from('products')
-      .select('*')
-      .eq('store_id', store.id);
+      const productsData = await AsyncStorage.getItem(`products_${store.id}`);
+      const products = productsData ? JSON.parse(productsData) : [];
 
-    const topProducts = Array.from(itemMap.entries())
-      .map(([productId, data]) => {
-        const product = products?.find((p) => p.id === productId);
-        return {
-          product: product || {
-            id: productId,
-            name: productId,
-            sku: '',
-            price: 0,
-            stock: 0,
-            category_id: null,
-            store_id: store.id,
-            image_url: null,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          },
-          quantity: data.quantity,
-          revenue: data.revenue,
-        };
-      })
-      .sort((a, b) => b.revenue - a.revenue)
-      .slice(0, 3);
+      const topProducts = Array.from(itemMap.entries())
+        .map(([productId, data]) => {
+          const product = products?.find((p: Product) => p.id === productId);
+          return {
+            product: product || {
+              id: productId,
+              name: productId,
+              sku: '',
+              price: 0,
+              stock: 0,
+              category_id: null,
+              store_id: store.id,
+              image_url: null,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            },
+            quantity: data.quantity,
+            revenue: data.revenue,
+          };
+        })
+        .sort((a, b) => b.revenue - a.revenue)
+        .slice(0, 3);
 
-    setSalesData({
-      totalSales,
-      totalOrders,
-      topProducts,
-    });
+      setSalesData({
+        totalSales,
+        totalOrders,
+        topProducts,
+      });
+    } catch (error) {
+      console.error('Error loading sales data:', error);
+    }
 
     setLoading(false);
     setRefreshing(false);

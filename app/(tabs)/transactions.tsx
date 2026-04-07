@@ -12,7 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Clock, DollarSign, X, CircleCheck as CheckCircle, CircleAlert as AlertCircle } from 'lucide-react-native';
 import { Colors, Spacing, FontSize, BorderRadius, Shadows } from '@/constants/theme';
 import { useAuth } from '@/contexts/AuthContext';
-import { supabase } from '@/lib/supabase';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Transaction, TransactionItem } from '@/types/database';
 
 interface TransactionWithItems extends Transaction {
@@ -36,14 +36,17 @@ export default function TransactionsScreen() {
     if (!store) return;
 
     setLoading(true);
-    const { data, error } = await supabase
-      .from('transactions')
-      .select('*, transaction_items(*)')
-      .eq('store_id', store.id)
-      .order('created_at', { ascending: false });
-
-    if (data) {
-      setTransactions(data);
+    try {
+      const data = await AsyncStorage.getItem(`transactions_${store.id}`);
+      if (data) {
+        const transactionsArray = JSON.parse(data);
+        transactionsArray.sort((a: TransactionWithItems, b: TransactionWithItems) =>
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        );
+        setTransactions(transactionsArray);
+      }
+    } catch (error) {
+      console.error('Error loading transactions:', error);
     }
     setLoading(false);
     setRefreshing(false);

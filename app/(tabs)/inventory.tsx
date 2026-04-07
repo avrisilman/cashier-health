@@ -15,7 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Package, Plus, X, CreditCard as Edit2, Trash2 } from 'lucide-react-native';
 import { Colors, Spacing, FontSize, BorderRadius, Shadows } from '@/constants/theme';
 import { useAuth } from '@/contexts/AuthContext';
-import { supabase } from '@/lib/supabase';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Product, Category } from '@/types/database';
 
 export default function InventoryScreen() {
@@ -42,16 +42,17 @@ export default function InventoryScreen() {
   const loadCategories = async () => {
     if (!store) return;
 
-    const { data } = await supabase
-      .from('categories')
-      .select('*')
-      .eq('store_id', store.id);
-
-    if (data) {
-      setCategories(data);
-      if (data.length > 0 && !selectedCategoryId) {
-        setSelectedCategoryId(data[0].id);
+    try {
+      const data = await AsyncStorage.getItem(`categories_${store.id}`);
+      if (data) {
+        const categoriesArray = JSON.parse(data);
+        setCategories(categoriesArray);
+        if (categoriesArray.length > 0 && !selectedCategoryId) {
+          setSelectedCategoryId(categoriesArray[0].id);
+        }
       }
+    } catch (error) {
+      console.error('Error loading categories:', error);
     }
   };
 
@@ -59,14 +60,17 @@ export default function InventoryScreen() {
     if (!store) return;
 
     setLoading(true);
-    const { data } = await supabase
-      .from('products')
-      .select('*')
-      .eq('store_id', store.id)
-      .order('created_at', { ascending: false });
-
-    if (data) {
-      setProducts(data);
+    try {
+      const data = await AsyncStorage.getItem(`products_${store.id}`);
+      if (data) {
+        const productsArray = JSON.parse(data);
+        productsArray.sort((a: Product, b: Product) =>
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        );
+        setProducts(productsArray);
+      }
+    } catch (error) {
+      console.error('Error loading products:', error);
     }
     setLoading(false);
     setRefreshing(false);
@@ -85,24 +89,32 @@ export default function InventoryScreen() {
 
     if (!store) return;
 
-    const { error } = await supabase.from('products').insert({
-      name,
-      sku,
-      price: parseFloat(price),
-      stock: parseInt(stock),
-      category_id: selectedCategoryId || null,
-      store_id: store.id,
-    });
+    try {
+      const newProduct: Product = {
+        id: `prod_${Date.now()}`,
+        name,
+        sku,
+        price: parseFloat(price),
+        stock: parseInt(stock),
+        category_id: selectedCategoryId || null,
+        store_id: store.id,
+        image_url: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
 
-    if (error) {
-      Alert.alert('Error', error.message);
-      return;
+      const data = await AsyncStorage.getItem(`products_${store.id}`);
+      const products = data ? JSON.parse(data) : [];
+      products.push(newProduct);
+      await AsyncStorage.setItem(`products_${store.id}`, JSON.stringify(products));
+
+      setShowAddModal(false);
+      resetForm();
+      loadProducts();
+      Alert.alert('Success', 'Product added successfully');
+    } catch (error) {
+      Alert.alert('Error', 'Failed to add product');
     }
-
-    setShowAddModal(false);
-    resetForm();
-    loadProducts();
-    Alert.alert('Success', 'Product added successfully');
   };
 
   const handleDeleteProduct = async (productId: string, productName: string) => {
@@ -115,15 +127,14 @@ export default function InventoryScreen() {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
-            const { error } = await supabase
-              .from('products')
-              .delete()
-              .eq('id', productId);
-
-            if (error) {
-              Alert.alert('Error', error.message);
-            } else {
+            try {
+              const data = await AsyncStorage.getItem(`products_${store?.id}`);
+              const products = data ? JSON.parse(data) : [];
+              const updatedProducts = products.filter((p: Product) => p.id !== productId);
+              await AsyncStorage.setItem(`products_${store?.id}`, JSON.stringify(updatedProducts));
               loadProducts();
+            } catch (error) {
+              Alert.alert('Error', 'Failed to delete product');
             }
           },
         },

@@ -1,7 +1,16 @@
 import React, { createContext, useState, useEffect, useContext } from 'react';
-import { Session, User } from '@supabase/supabase-js';
-import { supabase } from '@/lib/supabase';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Store } from '@/types/database';
+
+interface User {
+  id: string;
+  email: string;
+}
+
+interface Session {
+  user: User;
+  token: string;
+}
 
 interface AuthContextType {
   session: Session | null;
@@ -31,44 +40,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setUser(session?.user ?? null);
-      if (session?.user) {
-        loadStore(session.user.id);
-      } else {
-        setLoading(false);
-      }
-    });
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-      setUser(session?.user ?? null);
-      if (session?.user) {
-        loadStore(session.user.id);
-      } else {
-        setStore(null);
-        setLoading(false);
-      }
-    });
-
-    return () => subscription.unsubscribe();
+    loadSession();
   }, []);
 
-  const loadStore = async (userId: string) => {
+  const loadSession = async () => {
     try {
-      const { data, error } = await supabase
-        .from('stores')
-        .select('*')
-        .eq('user_id', userId)
-        .maybeSingle();
+      const sessionData = await AsyncStorage.getItem('session');
+      const storeData = await AsyncStorage.getItem('store');
 
-      if (error) throw error;
-      setStore(data);
+      if (sessionData) {
+        const parsedSession = JSON.parse(sessionData);
+        setSession(parsedSession);
+        setUser(parsedSession.user);
+      }
+
+      if (storeData) {
+        setStore(JSON.parse(storeData));
+      }
     } catch (error) {
-      console.error('Error loading store:', error);
+      console.error('Error loading session:', error);
     } finally {
       setLoading(false);
     }
@@ -76,11 +66,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const signIn = async (email: string, password: string) => {
     try {
-      const { error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
-      return { error };
+      const usersData = await AsyncStorage.getItem('users');
+      const users = usersData ? JSON.parse(usersData) : [];
+
+      const foundUser = users.find(
+        (u: any) => u.email === email && u.password === password
+      );
+
+      if (!foundUser) {
+        return { error: { message: 'Invalid email or password' } };
+      }
+
+      const newSession: Session = {
+        user: {
+          id: foundUser.id,
+          email: foundUser.email,
+        },
+        token: `mock_token_${Date.now()}`,
+      };
+
+      await AsyncStorage.setItem('session', JSON.stringify(newSession));
+      await AsyncStorage.setItem('store', JSON.stringify(foundUser.store));
+
+      setSession(newSession);
+      setUser(newSession.user);
+      setStore(foundUser.store);
+
+      return { error: null };
     } catch (error) {
       return { error };
     }
@@ -94,42 +106,47 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     phoneNumber: string
   ) => {
     try {
-      const { data: authData, error: authError } = await supabase.auth.signUp({
+      const usersData = await AsyncStorage.getItem('users');
+      const users = usersData ? JSON.parse(usersData) : [];
+
+      const existingUser = users.find((u: any) => u.email === email);
+      if (existingUser) {
+        return { error: { message: 'User already exists' } };
+      }
+
+      const userId = `user_${Date.now()}`;
+      const storeId = `store_${Date.now()}`;
+
+      const newStore: Store = {
+        id: storeId,
+        name: storeName,
+        owner_name: ownerName,
+        phone_number: phoneNumber,
+        user_id: userId,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      const newUser = {
+        id: userId,
         email,
         password,
-      });
+        store: newStore,
+      };
 
-      if (authError) return { error: authError };
+      users.push(newUser);
+      await AsyncStorage.setItem('users', JSON.stringify(users));
 
-      if (authData.user) {
-        const { data: storeData, error: storeError } = await supabase
-          .from('stores')
-          .insert({
-            name: storeName,
-            owner_name: ownerName,
-            phone_number: phoneNumber,
-            user_id: authData.user.id,
-          })
-          .select()
-          .single();
+      const categories = [
+        { id: `cat_${Date.now()}_1`, name: 'All', icon: 'package', store_id: storeId, created_at: new Date().toISOString() },
+        { id: `cat_${Date.now()}_2`, name: 'Food', icon: 'utensils', store_id: storeId, created_at: new Date().toISOString() },
+        { id: `cat_${Date.now()}_3`, name: 'Drinks', icon: 'coffee', store_id: storeId, created_at: new Date().toISOString() },
+        { id: `cat_${Date.now()}_4`, name: 'Snacks', icon: 'cookie', store_id: storeId, created_at: new Date().toISOString() },
+      ];
 
-        if (storeError) return { error: storeError };
-
-        if (storeData) {
-          const { error: categoryError } = await supabase
-            .from('categories')
-            .insert([
-              { name: 'All', icon: 'package', store_id: storeData.id },
-              { name: 'Food', icon: 'utensils', store_id: storeData.id },
-              { name: 'Drinks', icon: 'coffee', store_id: storeData.id },
-              { name: 'Snacks', icon: 'cookie', store_id: storeData.id },
-            ]);
-
-          if (categoryError) {
-            console.error('Error creating categories:', categoryError);
-          }
-        }
-      }
+      await AsyncStorage.setItem(`categories_${storeId}`, JSON.stringify(categories));
+      await AsyncStorage.setItem(`products_${storeId}`, JSON.stringify([]));
+      await AsyncStorage.setItem(`transactions_${storeId}`, JSON.stringify([]));
 
       return { error: null };
     } catch (error) {
@@ -138,13 +155,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const signOut = async () => {
-    await supabase.auth.signOut();
+    await AsyncStorage.removeItem('session');
+    await AsyncStorage.removeItem('store');
+    setSession(null);
+    setUser(null);
     setStore(null);
   };
 
   const refreshStore = async () => {
     if (user) {
-      await loadStore(user.id);
+      const storeData = await AsyncStorage.getItem('store');
+      if (storeData) {
+        setStore(JSON.parse(storeData));
+      }
     }
   };
 
