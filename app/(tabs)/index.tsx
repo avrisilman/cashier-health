@@ -12,7 +12,21 @@ import {
   Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Search, Bell, Plus, ShoppingBag, Minus, Trash2, X, CreditCard, Wallet, Building2, CircleCheck as CheckCircle } from 'lucide-react-native';
+import {
+  Search,
+  Bell,
+  Plus,
+  ShoppingBag,
+  Minus,
+  Trash2,
+  X,
+  CreditCard,
+  Wallet,
+  Building2,
+  CircleCheck as CheckCircle,
+  ScanBarcode,
+  Printer
+} from 'lucide-react-native';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -23,6 +37,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useCart } from '@/contexts/CartContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Product, Category } from '@/types/database';
+import BarcodeScanner from '@/components/BarcodeScanner';
+import BluetoothPrinter from '@/services/BluetoothPrinter';
 
 export default function CashierScreen() {
   const { store } = useAuth();
@@ -35,11 +51,14 @@ export default function CashierScreen() {
   const [showCart, setShowCart] = useState(false);
   const [showCheckout, setShowCheckout] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
+  const [showReceipt, setShowReceipt] = useState(false);
+  const [showScanner, setShowScanner] = useState(false);
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<
     'Cash' | 'QRIS' | 'Bank Transfer'
   >('Cash');
   const [cashReceived, setCashReceived] = useState('');
   const [loading, setLoading] = useState(true);
+  const [lastTransactionData, setLastTransactionData] = useState<any>(null);
 
   useEffect(() => {
     if (store) {
@@ -80,6 +99,23 @@ export default function CashierScreen() {
     setLoading(false);
   };
 
+  const handleBarcodeScanned = (barcode: string) => {
+    const product = products.find(
+      (p) => p.sku.toLowerCase() === barcode.toLowerCase()
+    );
+
+    if (product) {
+      if (product.stock > 0) {
+        addToCart(product);
+        Alert.alert('Success', `${product.name} added to cart`);
+      } else {
+        Alert.alert('Out of Stock', `${product.name} is currently out of stock`);
+      }
+    } else {
+      Alert.alert('Product Not Found', `No product with SKU ${barcode} found`);
+    }
+  };
+
   const filteredProducts = products.filter((product) => {
     const matchesSearch =
       product.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -103,6 +139,10 @@ export default function CashierScreen() {
     setShowCheckout(true);
   };
 
+  const setQuickCash = (amount: number) => {
+    setCashReceived(amount.toString());
+  };
+
   const handleCompleteCheckout = async () => {
     if (!store) return;
 
@@ -111,6 +151,8 @@ export default function CashierScreen() {
     const total = subtotal + tax;
 
     const orderNumber = `ORD-${Date.now()}`;
+    const cashAmount = cashReceived ? parseFloat(cashReceived) : total;
+    const changeAmount = selectedPaymentMethod === 'Cash' ? cashAmount - total : 0;
 
     try {
       const transactionId = `trans_${Date.now()}`;
@@ -122,6 +164,9 @@ export default function CashierScreen() {
         total,
         payment_method: selectedPaymentMethod,
         status: 'Completed',
+        sync_status: 'Pending',
+        cash_received: cashAmount,
+        change_amount: changeAmount,
         store_id: store.id,
         user_id: null,
         created_at: new Date().toISOString(),
@@ -143,29 +188,104 @@ export default function CashierScreen() {
       await AsyncStorage.setItem(`transactions_${store.id}`, JSON.stringify(transactions));
 
       const productsData = await AsyncStorage.getItem(`products_${store.id}`);
-      const products = productsData ? JSON.parse(productsData) : [];
+      const productsArray = productsData ? JSON.parse(productsData) : [];
 
       for (const item of cart) {
-        const productIndex = products.findIndex((p: Product) => p.id === item.product.id);
+        const productIndex = productsArray.findIndex((p: Product) => p.id === item.product.id);
         if (productIndex !== -1) {
-          products[productIndex].stock -= item.quantity;
-          products[productIndex].updated_at = new Date().toISOString();
+          productsArray[productIndex].stock -= item.quantity;
+          productsArray[productIndex].updated_at = new Date().toISOString();
         }
       }
 
-      await AsyncStorage.setItem(`products_${store.id}`, JSON.stringify(products));
+      await AsyncStorage.setItem(`products_${store.id}`, JSON.stringify(productsArray));
+
+      setLastTransactionData({
+        storeName: store.name,
+        storePhone: store.phone_number,
+        orderId: orderNumber,
+        dateTime: new Date().toLocaleString(),
+        items: transactionItems,
+        subtotal,
+        tax,
+        total,
+        paymentMethod: selectedPaymentMethod,
+        cashReceived: cashAmount,
+        change: changeAmount,
+      });
 
       setShowCheckout(false);
       setCashReceived('');
       setShowSuccess(true);
-      clearCart();
 
       setTimeout(() => {
         setShowSuccess(false);
+        setShowReceipt(true);
+        clearCart();
         loadProducts();
-      }, 3000);
+      }, 2000);
     } catch (error) {
       Alert.alert('Error', 'Failed to complete transaction');
+      console.error(error);
+    }
+  };
+
+  const handlePrintReceipt = async () => {
+    if (!lastTransactionData) return;
+
+    try {
+      const isEnabled = await BluetoothPrinter.isBluetoothEnabled();
+
+      if (!isEnabled) {
+        Alert.alert(
+          'Bluetooth Disabled',
+          'Please enable Bluetooth to connect to the printer.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Enable',
+              onPress: async () => {
+                try {
+                  await BluetoothPrinter.enableBluetooth();
+                  handlePrintReceipt();
+                } catch (error) {
+                  Alert.alert('Error', 'Failed to enable Bluetooth');
+                }
+              },
+            },
+          ]
+        );
+        return;
+      }
+
+      const devices = await BluetoothPrinter.scanDevices();
+
+      if (devices.length === 0) {
+        Alert.alert(
+          'No Printers Found',
+          'No paired Bluetooth printers found. Please pair your printer in device settings.'
+        );
+        return;
+      }
+
+      Alert.alert(
+        'Select Printer',
+        'Choose a printer to connect',
+        devices.map((device) => ({
+          text: device.name,
+          onPress: async () => {
+            try {
+              await BluetoothPrinter.connectToPrinter(device.address);
+              await BluetoothPrinter.printReceipt(lastTransactionData);
+              Alert.alert('Success', 'Receipt printed successfully');
+            } catch (error) {
+              Alert.alert('Error', 'Failed to print receipt');
+            }
+          },
+        })).concat([{ text: 'Cancel', style: 'cancel' }])
+      );
+    } catch (error) {
+      Alert.alert('Error', 'Failed to access Bluetooth printer');
       console.error(error);
     }
   };
@@ -188,6 +308,9 @@ export default function CashierScreen() {
   const subtotal = getCartTotal();
   const tax = subtotal * 0.11;
   const total = subtotal + tax;
+  const change = cashReceived && parseFloat(cashReceived) >= total
+    ? parseFloat(cashReceived) - total
+    : 0;
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -196,9 +319,17 @@ export default function CashierScreen() {
           <Text style={styles.storeName}>{store?.name || 'Store'}</Text>
           <Text style={styles.greeting}>Ready to sell</Text>
         </View>
-        <TouchableOpacity style={styles.notificationButton}>
-          <Bell size={24} color={Colors.text} />
-        </TouchableOpacity>
+        <View style={styles.headerActions}>
+          <TouchableOpacity
+            style={styles.scanButton}
+            onPress={() => setShowScanner(true)}
+          >
+            <ScanBarcode size={20} color={Colors.white} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.notificationButton}>
+            <Bell size={24} color={Colors.text} />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <View style={styles.searchContainer}>
@@ -271,7 +402,10 @@ export default function CashierScreen() {
           </View>
         }
         renderItem={({ item }) => (
-          <TouchableOpacity style={styles.productCard}>
+          <TouchableOpacity
+            style={styles.productCard}
+            onPress={() => item.stock > 0 && addToCart(item)}
+          >
             <View style={styles.productImageContainer}>
               {item.image_url ? (
                 <Image source={{ uri: item.image_url }} style={styles.productImage} />
@@ -291,7 +425,7 @@ export default function CashierScreen() {
               </Text>
             </View>
             <TouchableOpacity
-              style={styles.addButton}
+              style={[styles.addButton, item.stock === 0 && styles.addButtonDisabled]}
               onPress={() => addToCart(item)}
               disabled={item.stock === 0}
             >
@@ -313,6 +447,12 @@ export default function CashierScreen() {
           <Text style={styles.floatingCartText}>${total.toFixed(2)}</Text>
         </TouchableOpacity>
       )}
+
+      <BarcodeScanner
+        visible={showScanner}
+        onClose={() => setShowScanner(false)}
+        onScan={handleBarcodeScanned}
+      />
 
       <Modal
         visible={showCart}
@@ -384,9 +524,35 @@ export default function CashierScreen() {
               </View>
             </View>
 
-            <TouchableOpacity style={styles.checkoutButton} onPress={handleCheckout}>
-              <Text style={styles.checkoutButtonText}>Proceed to Checkout</Text>
-            </TouchableOpacity>
+            <View style={styles.cartFooter}>
+              <TouchableOpacity
+                style={styles.clearCartButton}
+                onPress={() => {
+                  Alert.alert(
+                    'Clear Cart',
+                    'Are you sure you want to clear the cart?',
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      {
+                        text: 'Clear',
+                        style: 'destructive',
+                        onPress: () => {
+                          clearCart();
+                          setShowCart(false);
+                        }
+                      },
+                    ]
+                  );
+                }}
+              >
+                <Trash2 size={20} color={Colors.error} />
+                <Text style={styles.clearCartButtonText}>Clear Cart</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.checkoutButton} onPress={handleCheckout}>
+                <Text style={styles.checkoutButtonText}>Checkout</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -398,89 +564,113 @@ export default function CashierScreen() {
         onRequestClose={() => setShowCheckout(false)}
       >
         <View style={styles.modalOverlay}>
-          <View style={styles.checkoutModal}>
-            <View style={styles.cartHeader}>
-              <Text style={styles.cartTitle}>Payment Method</Text>
-              <TouchableOpacity onPress={() => setShowCheckout(false)}>
-                <X size={24} color={Colors.text} />
+          <ScrollView>
+            <View style={styles.checkoutModal}>
+              <View style={styles.cartHeader}>
+                <Text style={styles.cartTitle}>Payment Method</Text>
+                <TouchableOpacity onPress={() => setShowCheckout(false)}>
+                  <X size={24} color={Colors.text} />
+                </TouchableOpacity>
+              </View>
+
+              <TouchableOpacity
+                style={[
+                  styles.paymentOption,
+                  selectedPaymentMethod === 'Cash' && styles.paymentOptionActive,
+                ]}
+                onPress={() => setSelectedPaymentMethod('Cash')}
+              >
+                <Wallet size={24} color={selectedPaymentMethod === 'Cash' ? Colors.primary : Colors.textSecondary} />
+                <Text style={[styles.paymentOptionText, selectedPaymentMethod === 'Cash' && styles.paymentOptionTextActive]}>Cash</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.paymentOption,
+                  selectedPaymentMethod === 'QRIS' && styles.paymentOptionActive,
+                ]}
+                onPress={() => setSelectedPaymentMethod('QRIS')}
+              >
+                <CreditCard size={24} color={selectedPaymentMethod === 'QRIS' ? Colors.primary : Colors.textSecondary} />
+                <Text style={[styles.paymentOptionText, selectedPaymentMethod === 'QRIS' && styles.paymentOptionTextActive]}>QRIS</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.paymentOption,
+                  selectedPaymentMethod === 'Bank Transfer' && styles.paymentOptionActive,
+                ]}
+                onPress={() => setSelectedPaymentMethod('Bank Transfer')}
+              >
+                <Building2 size={24} color={selectedPaymentMethod === 'Bank Transfer' ? Colors.primary : Colors.textSecondary} />
+                <Text style={[styles.paymentOptionText, selectedPaymentMethod === 'Bank Transfer' && styles.paymentOptionTextActive]}>Bank Transfer</Text>
+              </TouchableOpacity>
+
+              <View style={styles.checkoutSummary}>
+                <Text style={styles.checkoutTotal}>Total: ${total.toFixed(2)}</Text>
+              </View>
+
+              {selectedPaymentMethod === 'Cash' && (
+                <View style={styles.cashCalculator}>
+                  <Text style={styles.calculatorLabel}>Cash Received</Text>
+                  <TextInput
+                    style={styles.cashInput}
+                    placeholder="0.00"
+                    placeholderTextColor={Colors.textLight}
+                    value={cashReceived}
+                    onChangeText={setCashReceived}
+                    keyboardType="decimal-pad"
+                  />
+
+                  <View style={styles.quickCashButtons}>
+                    <TouchableOpacity
+                      style={styles.quickCashButton}
+                      onPress={() => setQuickCash(20)}
+                    >
+                      <Text style={styles.quickCashText}>$20</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.quickCashButton}
+                      onPress={() => setQuickCash(50)}
+                    >
+                      <Text style={styles.quickCashText}>$50</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.quickCashButton}
+                      onPress={() => setQuickCash(100)}
+                    >
+                      <Text style={styles.quickCashText}>$100</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {cashReceived && parseFloat(cashReceived) >= total ? (
+                    <View style={styles.changeDisplay}>
+                      <Text style={styles.changeLabel}>Change (Kembalian)</Text>
+                      <Text style={styles.changeAmount}>
+                        ${change.toFixed(2)}
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+              )}
+
+              <TouchableOpacity
+                style={[
+                  styles.completeButton,
+                  selectedPaymentMethod === 'Cash' &&
+                    (!cashReceived || parseFloat(cashReceived) < total) &&
+                    styles.completeButtonDisabled,
+                ]}
+                onPress={handleCompleteCheckout}
+                disabled={
+                  selectedPaymentMethod === 'Cash' &&
+                  (!cashReceived || parseFloat(cashReceived) < total)
+                }
+              >
+                <Text style={styles.completeButtonText}>Complete Payment</Text>
               </TouchableOpacity>
             </View>
-
-            <TouchableOpacity
-              style={[
-                styles.paymentOption,
-                selectedPaymentMethod === 'Cash' && styles.paymentOptionActive,
-              ]}
-              onPress={() => setSelectedPaymentMethod('Cash')}
-            >
-              <Wallet size={24} color={selectedPaymentMethod === 'Cash' ? Colors.primary : Colors.textSecondary} />
-              <Text style={[styles.paymentOptionText, selectedPaymentMethod === 'Cash' && styles.paymentOptionTextActive]}>Cash</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[
-                styles.paymentOption,
-                selectedPaymentMethod === 'QRIS' && styles.paymentOptionActive,
-              ]}
-              onPress={() => setSelectedPaymentMethod('QRIS')}
-            >
-              <CreditCard size={24} color={selectedPaymentMethod === 'QRIS' ? Colors.primary : Colors.textSecondary} />
-              <Text style={[styles.paymentOptionText, selectedPaymentMethod === 'QRIS' && styles.paymentOptionTextActive]}>QRIS</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[
-                styles.paymentOption,
-                selectedPaymentMethod === 'Bank Transfer' && styles.paymentOptionActive,
-              ]}
-              onPress={() => setSelectedPaymentMethod('Bank Transfer')}
-            >
-              <Building2 size={24} color={selectedPaymentMethod === 'Bank Transfer' ? Colors.primary : Colors.textSecondary} />
-              <Text style={[styles.paymentOptionText, selectedPaymentMethod === 'Bank Transfer' && styles.paymentOptionTextActive]}>Bank Transfer</Text>
-            </TouchableOpacity>
-
-            <View style={styles.checkoutSummary}>
-              <Text style={styles.checkoutTotal}>Total: ${total.toFixed(2)}</Text>
-            </View>
-
-            {selectedPaymentMethod === 'Cash' && (
-              <View style={styles.cashCalculator}>
-                <Text style={styles.calculatorLabel}>Cash Received</Text>
-                <TextInput
-                  style={styles.cashInput}
-                  placeholder="0.00"
-                  placeholderTextColor={Colors.textLight}
-                  value={cashReceived}
-                  onChangeText={setCashReceived}
-                  keyboardType="decimal-pad"
-                />
-                {cashReceived && parseFloat(cashReceived) >= total ? (
-                  <View style={styles.changeDisplay}>
-                    <Text style={styles.changeLabel}>Change (Kembalian)</Text>
-                    <Text style={styles.changeAmount}>
-                      ${(parseFloat(cashReceived) - total).toFixed(2)}
-                    </Text>
-                  </View>
-                ) : null}
-              </View>
-            )}
-
-            <TouchableOpacity
-              style={[
-                styles.completeButton,
-                selectedPaymentMethod === 'Cash' &&
-                  (!cashReceived || parseFloat(cashReceived) < total) &&
-                  styles.completeButtonDisabled,
-              ]}
-              onPress={handleCompleteCheckout}
-              disabled={
-                selectedPaymentMethod === 'Cash' &&
-                (!cashReceived || parseFloat(cashReceived) < total)
-              }
-            >
-              <Text style={styles.completeButtonText}>Complete Payment</Text>
-            </TouchableOpacity>
-          </View>
+          </ScrollView>
         </View>
       </Modal>
 
@@ -498,6 +688,91 @@ export default function CashierScreen() {
             <Text style={styles.successTitle}>Payment Successful!</Text>
             <Text style={styles.successSubtitle}>Transaction completed</Text>
           </Animated.View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showReceipt}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowReceipt(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.receiptModal}>
+            <View style={styles.cartHeader}>
+              <Text style={styles.cartTitle}>Receipt</Text>
+              <TouchableOpacity onPress={() => setShowReceipt(false)}>
+                <X size={24} color={Colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={styles.receiptContent}>
+              {lastTransactionData && (
+                <>
+                  <Text style={styles.receiptStoreName}>{lastTransactionData.storeName}</Text>
+                  <Text style={styles.receiptStoreInfo}>{lastTransactionData.storePhone}</Text>
+                  <View style={styles.receiptDivider} />
+
+                  <Text style={styles.receiptLabel}>Order: {lastTransactionData.orderId}</Text>
+                  <Text style={styles.receiptLabel}>Date: {lastTransactionData.dateTime}</Text>
+                  <View style={styles.receiptDivider} />
+
+                  {lastTransactionData.items.map((item: any) => (
+                    <View key={item.id} style={styles.receiptItem}>
+                      <Text style={styles.receiptItemName}>{item.product_name}</Text>
+                      <Text style={styles.receiptItemDetails}>
+                        {item.quantity} x ${item.price.toFixed(2)} = ${item.subtotal.toFixed(2)}
+                      </Text>
+                    </View>
+                  ))}
+
+                  <View style={styles.receiptDivider} />
+
+                  <View style={styles.receiptSummaryRow}>
+                    <Text style={styles.receiptSummaryLabel}>Subtotal:</Text>
+                    <Text style={styles.receiptSummaryValue}>${lastTransactionData.subtotal.toFixed(2)}</Text>
+                  </View>
+                  <View style={styles.receiptSummaryRow}>
+                    <Text style={styles.receiptSummaryLabel}>Tax (11%):</Text>
+                    <Text style={styles.receiptSummaryValue}>${lastTransactionData.tax.toFixed(2)}</Text>
+                  </View>
+                  <View style={styles.receiptSummaryRow}>
+                    <Text style={styles.receiptTotalLabel}>Total:</Text>
+                    <Text style={styles.receiptTotalValue}>${lastTransactionData.total.toFixed(2)}</Text>
+                  </View>
+
+                  <View style={styles.receiptDivider} />
+
+                  <Text style={styles.receiptPaymentMethod}>Payment: {lastTransactionData.paymentMethod}</Text>
+                  {lastTransactionData.paymentMethod === 'Cash' && (
+                    <>
+                      <Text style={styles.receiptLabel}>Cash: ${lastTransactionData.cashReceived.toFixed(2)}</Text>
+                      <Text style={styles.receiptChange}>Change: ${lastTransactionData.change.toFixed(2)}</Text>
+                    </>
+                  )}
+
+                  <Text style={styles.receiptThankYou}>Thank you for your purchase!</Text>
+                </>
+              )}
+            </ScrollView>
+
+            <View style={styles.receiptActions}>
+              <TouchableOpacity
+                style={styles.printButton}
+                onPress={handlePrintReceipt}
+              >
+                <Printer size={20} color={Colors.white} />
+                <Text style={styles.printButtonText}>Print Receipt</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.doneButton}
+                onPress={() => setShowReceipt(false)}
+              >
+                <Text style={styles.doneButtonText}>Done</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
         </View>
       </Modal>
     </SafeAreaView>
@@ -527,6 +802,18 @@ const styles = StyleSheet.create({
   greeting: {
     fontSize: FontSize.sm,
     color: Colors.textSecondary,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+  },
+  scanButton: {
+    width: 40,
+    height: 40,
+    borderRadius: BorderRadius.md,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   notificationButton: {
     width: 40,
@@ -645,6 +932,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     ...Shadows.small,
+  },
+  addButtonDisabled: {
+    backgroundColor: Colors.textLight,
+    opacity: 0.5,
   },
   emptyState: {
     flex: 1,
@@ -800,9 +1091,31 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: Colors.primary,
   },
-  checkoutButton: {
+  cartFooter: {
+    flexDirection: 'row',
+    gap: Spacing.md,
     marginHorizontal: Spacing.lg,
     marginTop: Spacing.md,
+  },
+  clearCartButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    backgroundColor: Colors.white,
+    borderWidth: 2,
+    borderColor: Colors.error,
+    borderRadius: BorderRadius.md,
+    paddingVertical: Spacing.md,
+  },
+  clearCartButtonText: {
+    fontSize: FontSize.md,
+    fontWeight: 'bold',
+    color: Colors.error,
+  },
+  checkoutButton: {
+    flex: 2,
     backgroundColor: Colors.primary,
     borderRadius: BorderRadius.md,
     paddingVertical: Spacing.md,
@@ -820,6 +1133,7 @@ const styles = StyleSheet.create({
     borderTopRightRadius: BorderRadius.xl,
     paddingTop: Spacing.lg,
     paddingBottom: Spacing.xl,
+    minHeight: '90%',
   },
   paymentOption: {
     flexDirection: 'row',
@@ -884,18 +1198,36 @@ const styles = StyleSheet.create({
     borderColor: Colors.primary,
     marginBottom: Spacing.md,
   },
+  quickCashButtons: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    marginBottom: Spacing.md,
+  },
+  quickCashButton: {
+    flex: 1,
+    backgroundColor: Colors.primary,
+    borderRadius: BorderRadius.md,
+    paddingVertical: Spacing.sm,
+    alignItems: 'center',
+  },
+  quickCashText: {
+    fontSize: FontSize.md,
+    fontWeight: 'bold',
+    color: Colors.white,
+  },
   changeDisplay: {
     paddingTop: Spacing.md,
     borderTopWidth: 1,
     borderTopColor: Colors.border,
+    alignItems: 'center',
   },
   changeLabel: {
-    fontSize: FontSize.sm,
+    fontSize: FontSize.md,
     color: Colors.textSecondary,
-    marginBottom: Spacing.xs,
+    marginBottom: Spacing.sm,
   },
   changeAmount: {
-    fontSize: FontSize.xl,
+    fontSize: FontSize.xxxl,
     fontWeight: 'bold',
     color: Colors.success,
   },
@@ -941,5 +1273,126 @@ const styles = StyleSheet.create({
   successSubtitle: {
     fontSize: FontSize.md,
     color: Colors.textSecondary,
+  },
+  receiptModal: {
+    backgroundColor: Colors.white,
+    borderTopLeftRadius: BorderRadius.xl,
+    borderTopRightRadius: BorderRadius.xl,
+    paddingTop: Spacing.lg,
+    paddingBottom: Spacing.xl,
+    maxHeight: '90%',
+  },
+  receiptContent: {
+    paddingHorizontal: Spacing.lg,
+    marginBottom: Spacing.md,
+  },
+  receiptStoreName: {
+    fontSize: FontSize.xl,
+    fontWeight: 'bold',
+    color: Colors.text,
+    textAlign: 'center',
+    marginBottom: Spacing.xs,
+  },
+  receiptStoreInfo: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    marginBottom: Spacing.md,
+  },
+  receiptDivider: {
+    height: 1,
+    backgroundColor: Colors.border,
+    marginVertical: Spacing.md,
+  },
+  receiptLabel: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    marginBottom: Spacing.xs,
+  },
+  receiptItem: {
+    marginBottom: Spacing.md,
+  },
+  receiptItemName: {
+    fontSize: FontSize.md,
+    fontWeight: '600',
+    color: Colors.text,
+    marginBottom: Spacing.xs,
+  },
+  receiptItemDetails: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+  },
+  receiptSummaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: Spacing.sm,
+  },
+  receiptSummaryLabel: {
+    fontSize: FontSize.md,
+    color: Colors.textSecondary,
+  },
+  receiptSummaryValue: {
+    fontSize: FontSize.md,
+    fontWeight: '600',
+    color: Colors.text,
+  },
+  receiptTotalLabel: {
+    fontSize: FontSize.lg,
+    fontWeight: 'bold',
+    color: Colors.text,
+  },
+  receiptTotalValue: {
+    fontSize: FontSize.lg,
+    fontWeight: 'bold',
+    color: Colors.primary,
+  },
+  receiptPaymentMethod: {
+    fontSize: FontSize.md,
+    color: Colors.text,
+    marginBottom: Spacing.xs,
+  },
+  receiptChange: {
+    fontSize: FontSize.lg,
+    fontWeight: 'bold',
+    color: Colors.success,
+    marginTop: Spacing.xs,
+  },
+  receiptThankYou: {
+    fontSize: FontSize.md,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    marginTop: Spacing.lg,
+  },
+  receiptActions: {
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.md,
+    gap: Spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+  },
+  printButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    backgroundColor: Colors.primary,
+    borderRadius: BorderRadius.md,
+    paddingVertical: Spacing.md,
+  },
+  printButtonText: {
+    fontSize: FontSize.md,
+    fontWeight: 'bold',
+    color: Colors.white,
+  },
+  doneButton: {
+    backgroundColor: Colors.background,
+    borderRadius: BorderRadius.md,
+    paddingVertical: Spacing.md,
+    alignItems: 'center',
+  },
+  doneButtonText: {
+    fontSize: FontSize.md,
+    fontWeight: '600',
+    color: Colors.text,
   },
 });

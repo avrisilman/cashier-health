@@ -35,6 +35,8 @@ export default function LoginScreen() {
 
     if (error) {
       Alert.alert('Login Failed', error.message || 'Invalid credentials');
+    } else {
+      router.replace('/(tabs)');
     }
   };
 

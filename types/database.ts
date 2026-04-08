@@ -37,6 +37,9 @@ export interface Transaction {
   total: number;
   payment_method: 'Cash' | 'QRIS' | 'Bank Transfer';
   status: 'Completed' | 'Pending';
+  sync_status?: 'Pending' | 'Synced';
+  cash_received?: number;
+  change_amount?: number;
   store_id: string;
   user_id: string | null;
   created_at: string;

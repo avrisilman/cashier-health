@@ -17,7 +17,7 @@ import { useAuth } from '@/contexts/AuthContext';
 
 export default function RegisterScreen() {
   const router = useRouter();
-  const { signUp } = useAuth();
+  const { signUp, signIn } = useAuth();
   const [storeName, setStoreName] = useState('');
   const [ownerName, setOwnerName] = useState('');
   const [email, setEmail] = useState('');
@@ -46,14 +46,21 @@ export default function RegisterScreen() {
 
     setLoading(true);
     const { error } = await signUp(email, password, storeName, ownerName, phoneNumber);
-    setLoading(false);
 
     if (error) {
+      setLoading(false);
       Alert.alert('Registration Failed', error.message || 'Something went wrong');
     } else {
-      Alert.alert('Success', 'Account created successfully! Please sign in.', [
-        { text: 'OK', onPress: () => router.replace('/auth/login') },
-      ]);
+      const { error: signInError } = await signIn(email, password);
+      setLoading(false);
+
+      if (!signInError) {
+        router.replace('/(tabs)');
+      } else {
+        Alert.alert('Success', 'Account created! Please sign in.', [
+          { text: 'OK', onPress: () => router.replace('/auth/login') },
+        ]);
+      }
     }
   };
 
