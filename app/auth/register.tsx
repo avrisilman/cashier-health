@@ -55,10 +55,10 @@ export default function RegisterScreen() {
       setLoading(false);
 
       if (!signInError) {
-        router.replace('/(tabs)');
+        router.replace('/(tabs)' as any);
       } else {
         Alert.alert('Success', 'Account created! Please sign in.', [
-          { text: 'OK', onPress: () => router.replace('/auth/login') },
+          { text: 'OK', onPress: () => router.replace('/auth/login' as any) },
         ]);
       }
     }

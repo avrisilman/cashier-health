@@ -12,10 +12,10 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <AuthProvider>
         <Stack screenOptions={{ headerShown: false }}>
-          <Stack.Screen name="index" />
-          <Stack.Screen name="auth/login" />
-          <Stack.Screen name="auth/register" />
-          <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="index" options={{ animation: 'none' }} />
+          <Stack.Screen name="auth/login" options={{ animation: 'none' }} />
+          <Stack.Screen name="auth/register" options={{ animation: 'slide_from_right' }} />
+          <Stack.Screen name="(tabs)" options={{ animation: 'none' }} />
           <Stack.Screen name="+not-found" />
         </Stack>
         <StatusBar style="auto" />

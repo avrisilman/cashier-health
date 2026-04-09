@@ -282,7 +282,7 @@ export default function CashierScreen() {
               Alert.alert('Error', 'Failed to print receipt');
             }
           },
-        })).concat([{ text: 'Cancel', style: 'cancel' }])
+        })).concat([{ text: 'Cancel', onPress: async () => {} }])
       );
     } catch (error) {
       Alert.alert('Error', 'Failed to access Bluetooth printer');
